@@ -1,0 +1,265 @@
+---
+title: "Foundations of Probability and Statistics project"
+author: "Fabrizio D'Intinosante, Massimiliano Perletti"
+output: pdf_document
+---
+
+\tableofcontents
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+In order to try to determine the relation between the footballer's performance and the price at which they where sold we scraped two dataframes: 
+
+* From [Transfer Market](https://www.transfermarkt.it/) we obtain the one containing the information about the selling price for each football player.
+
+* From [Who Scored](https://it.whoscored.com/) we obtain the one containing the players' perfomance, in the year preceding the market operation.
+
+## Import packages
+```{r packages, include=TRUE, results='hide', message=FALSE}
+library(readxl)
+library(dplyr)
+library(gsubfn)
+library(NLP)
+library(pander)
+library(ggplot2)
+library(GGally)
+library(ggthemes)
+library(nortest)
+library(EnvStats)
+```
+
+
+```{r pander options, include=FALSE}
+panderOptions('table.continues', '')
+```
+
+# Instance matching
+
+In order to obtain a unique, large dataset, we need to apply an instance matching procedure so we can make the analysis.
+
+## Import datasets 
+
+First of all we start importing the singles datasets and giving them a first look
+```{r Imports and heads, results='asis'}
+transfer <- read_excel("transfer_serie_A.xlsx")
+scored <- read_excel("TransferMarket_WhoScored_Data_Seria_A_v1.xlsx")
+pander(head(transfer), caption = "Transfer Market")
+pander(head(scored), caption = "Who Scored")
+```
+
+## First data cleaning operation
+
+Now we proceed to eliminate duplicates, to add a new names column to work with, and to clean this one from white spaces, accents ect.
+
+```{r Cleaning the two datasets}
+#for transfer
+transfer1 <- distinct(transfer,transfer$name,transfer$role,       
+                      transfer$age,transfer$nation, .keep_all=T)
+transfer1$`transfer$name`<-NULL
+transfer1$`transfer$role`<-NULL
+transfer1$`transfer$age`<-NULL
+transfer1$`transfer$nation`<-NULL
+transfer1$newname <- transfer1$name 
+transfer1$newname <- tolower(transfer1$name)
+transfer1$newname<-gsub(" ","",transfer1$newname)
+transfer1$newname<-iconv(transfer1$newname,
+                         from = 'UTF-8', to = 'ASCII//TRANSLIT')
+
+#for who scored
+scored1 <- scored
+scored1$newname <- scored1$name
+scored1$newname <- tolower(scored1$newname)
+scored1$newname<-gsub(" ","",scored1$newname)
+scored1$newname<-iconv(scored1$newname, 
+                       from = 'UTF-8', to = 'ASCII//TRANSLIT')
+```
+
+## Algorithm application
+
+Now that we have two quite cleaned dataset we use a partial matching algorithm to merge the two datasets that shows differences in the players' names encoding.
+
+```{r Partial matching function}
+signature=function(x){
+  sig=paste(sort(unlist(strsplit(tolower(x)," "))),collapse='')
+  return(sig)
+}
+
+partialMatch=function(x,y,levDist=0.1){
+  xx=data.frame(sig=sapply(x, signature),row.names=NULL)
+  yy=data.frame(sig=sapply(y, signature),row.names=NULL)
+  xx$raw=x
+  yy$raw=y
+  xx=subset(xx,subset=(sig!=''))
+  xy=merge(xx,yy,by='sig',all=T)
+  matched=subset(xy,subset=(!(is.na(raw.x)) & !(is.na(raw.y))))
+  matched$pass="Duplicate"
+  todo=subset(xy,subset=(is.na(raw.y)),select=c(sig,raw.x))
+  colnames(todo)=c('sig','raw')
+  todo$partials= as.character(sapply(todo$sig, agrep, yy$sig,
+                                     max.distance = levDist,value=T))
+  todo=merge(todo,yy,by.x='partials',by.y='sig')
+  partial.matched=subset(todo,subset=(!(is.na(raw.x)) & !(is.na(raw.y))),
+                         select=c("sig","raw.x","raw.y"))
+  partial.matched$pass="Partial"
+  matched=rbind(matched,partial.matched)
+  un.matched=subset(todo,subset=(is.na(raw.x)),
+                    select=c("sig","raw.x","raw.y"))
+  if (nrow(un.matched)>0){
+    un.matched$pass="Unmatched"
+    matched=rbind(matched,un.matched)
+  }
+  matched=subset(matched,select=c("raw.x","raw.y","pass"))
+  
+  return(matched)
+}
+matches = partialMatch(scored1$name,transfer1$name)
+a = scored1
+b = transfer1
+matched2 = merge(a,matches,by.x='name',by.y='raw.x',all.x=T)
+matched2 = merge(matched2,b,by.x='raw.y',by.y='name',all.x=T)
+matched2 <- na.omit(matched2)
+matched2 <- matched2 %>% distinct(name,age.x,role, .keep_all = T)
+pander(data.frame(dim (matched2), row.names = c("N of players", "N of columns")), 
+       caption = "Dimesion of merged dataset")
+```
+
+With this partial matching procedure we obtained the complete dataset with the players' perfomance at the $Year_{t-1}$ and the price at which they where sold at the $Year_t$. Now we can proceed to apply some procedures to preprocess the data.
+
+# Preprocessing
+
+During the scraping procedure some elements of the tables are positioned incorrectly into the the column, in order to obtain well formed data we need to apply some transformations to our merged dataset.
+
+```{r Preprocessing}
+data <- matched2
+data$market_value<-gsub(" ","",data$market_value) 
+data$market_value<-gsub("mln","0000",data$market_value)
+data$market_value<-gsub("mila","000",data$market_value) 
+data$market_value<-gsub(",","",data$market_value)
+data$market_value <- as.numeric(data$market_value)
+data$value <- gsub(".*(gratuito)","Vendita secca",data$value)
+data$value <- gsub(".*(Fine prestito).*","\\1",data$value)
+data$value <- gsub(".*(Prestito)","\\1",data$value)
+data$value <- gsub(".*mln.*mln","Diritto di riscatto",data$value)
+data$value <- gsub(".*mln.*mila","Diritto di riscatto",data$value)
+data$value <- gsub(".*-","Svincolato o ritirato",data$value)
+data$value <- gsub(".*mln.*","Sconosciuto",data$value)
+data$value <- gsub(".*mila.*","Sconosciuto",data$value)
+data$value <- as.character(data$value)
+data <- data[data$value != "Svincolato o ritirato",]
+data <- data[data$value != "Sconosciuto",]
+data$value <-gsub("Fine prestito", "Prestito", data$value)
+data$value <- as.factor(data$value)
+```
+
+Now that we have cleaned up our data we can remove useless variables as *firstName* and *lastName* because we already have the *name* variable that includes the other two and, as this one, others.
+
+```{r Cleaning from useless variables, include=FALSE}
+data$`_id` <- NULL
+data$firstName <- NULL
+data$lastName <- NULL
+data$playedPositions <- NULL
+data$playedPositionsShort <- NULL
+data$playerId <- NULL
+data$seasonId <- NULL
+data$seasonName <- NULL
+data$teamId <- NULL
+data$teamRegionName <- NULL
+data$tournamentId <- NULL
+data$tournamentName <- NULL
+data$tournamentRegionCode <- NULL
+data$tournamentRegionId <- NULL
+data$tournamentRegionName <- NULL
+data$tournamentShortName <- NULL
+data$season <- NULL
+data$raw.y <- NULL
+data$regionCode <- NULL
+data$ newname.x <- NULL
+data$pass <- NULL
+data$age.y <- NULL
+data$newname.y <- NULL
+```
+
+The new datasets appears like
+
+```{r Final dataset, results='asis'}
+pander(head(data), caption = "Final dataset")
+```
+
+With dimensions:
+
+```{r}
+pander(data.frame(dim (data), row.names = c("N of players", "N of columns")), 
+       caption = "Dimesion final dataset")
+```
+
+
+```{r Cleaning workspace, echo=FALSE, message=FALSE, results='hide'}
+ls()
+rm("a", "b", "matched2", "matches", "partialMatch", "scored", "scored1", "signature", "transfer",
+   "transfer1")
+```
+
+# Linear model
+
+## Descriptive
+
+In first place we can create a correlation matrix that compute the value of correlation between every numeric variable.
+
+```{r Correlation betweenn numeric variables, results='asis'}
+numeric_var <- names(data[,c(2,3,4,5,6,7,11,12,13,15,16,18,19,21,22,28)])
+pander(cor(data[, numeric_var]), big.mark = ",",
+       caption = "Correlation between numeric variables")
+```
+
+Now we can inspect also a variables' summary
+
+```{r Summary of numeric variables, results='asis'}
+pander(summary(data[,numeric_var]), big.mark = ",",
+       caption = "Summary of numeric variables")
+```
+
+### Some plot
+
+We need to take a first look to the distribution of *market_value* variable that represent the price at which the football's players were sold
+
+```{r fig1 Distribution of Market value, echo = FALSE, results='asis', fig.height = 3, fig.width = 5, fig.align = 'center'}
+ggplot(data,(aes(market_value))) +
+  geom_histogram(aes(y = ..density..), bins = 25, fill = "lightblue", color = "black") +
+  geom_vline(xintercept = quantile(data$market_value, 0.50), color = "dark red", lty = 2) +
+  geom_vline(xintercept = mean(data$market_value), color = "dark blue", lty = 2) +
+  labs(x = "Market_value", y = "Density",
+       subtitle = "Blue line represents the mean while red line represents \nthe median") +
+  ggtitle("Distribution of Market_value") + theme_bw()
+```
+
+We can observe that there is a strong positive skewness because the meadian is lower that the mean, this is due to the presence of much more expensive market operations than the average. This means that our $Y$ variable doesn't present a **normal distribution**.
+
+We can focus on our $Y$ distribution but conditionally to the type of operation the players were involved to.
+
+```{r fig2 Density of distribution for type of operation, echo=FALSE, results='asis', fig.height = 3.5, fig.width = 5, fig.align = 'center'}
+ggplot(data, aes(x = market_value, fill = value)) +
+  geom_density(size = 0.6, alpha = .3) +      
+  geom_rug(aes(x = market_value, y = 0), position = position_jitter(height = 0)) + 
+  labs(x = "Market_value", y = "Density", fill = "",
+       subtitle = "Densities are distinct for type of operation") + 
+  ggtitle("Density of distribution for Market_value") +
+  coord_cartesian(xlim=c(0,15000000)) + theme_bw() +
+    theme(legend.position = 'bottom')
+```
+
+## Tests
+
+We know from [Transfer Market](https://www.transfermarkt.it/) that the mean of total market operation for the season 2017/2018 is equal to **1.090.607 euro**
+
+```{r Test on a mean}
+market_mean = 1090607
+pander(t.test(data$market_value, mu = market_mean))
+```
+
+From this test we learn that the mean of the operation of our dataset is significantly different from the mean we found on [Transfer Market](https://www.transfermarkt.it/) for the previous year.
+
