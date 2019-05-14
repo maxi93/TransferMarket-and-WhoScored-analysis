@@ -262,4 +262,28 @@ pander(t.test(data$market_value, mu = market_mean))
 ```
 
 From this test we learn that the mean of the operation of our dataset is significantly different from the mean we found on [Transfer Market](https://www.transfermarkt.it/) for the previous year.
+WE already seen graphically that the distribution of our $Y$ variable isn't normal but we can also use some test to verify this.
+
+```{r Normality}
+pander(ad.test(data$market_value))
+pander(shapiro.test(data$market))
+pander(wilcox.test(data$market_value, conf.int = TRUE, mu = market_mean))
+```
+Our test confirms that *market_value* isn't normally distributed.
+We can check also the association between the players' market_price and the operation with they have been bought
+```{r Chi-squared, message=TRUE, warning=FALSE}
+a.table <- table(data$market_value,data$value)
+chi.a = chisq.test(a.table)
+pander(chi.a)
+chi.norm.a = chi.a$statistic/(nrow(data)*min(nrow(a.table)-1,ncol(a.table)-1))
+pander(chi.norm.a)
+```
+```{r fig3, echo=FALSE, results='asis', fig.height = 2.5, fig.width = 4, fig.align = 'center'}
+ggplot(data, aes(x = value, y = market_value, fill = value)) +
+  geom_boxplot(notch = TRUE) +
+  theme_bw() + labs(x = "Type of operation", 
+                    y = "Market_value", 
+                    title = "Market value by type of operation") + 
+  theme(legend.position = "none")
+```
 
