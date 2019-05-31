@@ -31,6 +31,12 @@ library(GGally)
 library(ggthemes)
 library(nortest)
 library(EnvStats)
+library(coefplot)
+library(forestmodel)
+library(lsmeans)
+library(knitr)
+library(kableExtra)
+library(lmtest)
 ```
 
 
@@ -204,7 +210,7 @@ rm("a", "b", "matched2", "matches", "partialMatch", "scored", "scored1", "signat
    "transfer1")
 ```
 
-# Linear model
+# Low level analysis
 
 ## Descriptive
 
@@ -262,4 +268,122 @@ pander(t.test(data$market_value, mu = market_mean))
 ```
 
 From this test we learn that the mean of the operation of our dataset is significantly different from the mean we found on [Transfer Market](https://www.transfermarkt.it/) for the previous year.
+WE already seen graphically that the distribution of our $Y$ variable isn't normal but we can also use some test to verify this.
+
+```{r Normality}
+pander(ad.test(data$market_value))
+pander(shapiro.test(data$market))
+pander(wilcox.test(data$market_value, conf.int = TRUE, mu = market_mean))
+```
+Our test confirms that *market_value* isn't normally distributed.
+We can check also the association between the players' market_price and the operation with they have been bought
+```{r Chi-squared, message=TRUE, warning=FALSE}
+a.table <- table(data$market_value,data$value)
+chi.a = chisq.test(a.table)
+pander(chi.a)
+chi.norm.a = chi.a$statistic/(nrow(data)*min(nrow(a.table)-1,ncol(a.table)-1))
+pander(chi.norm.a)
+```
+```{r fig3, echo=FALSE, results='asis', fig.height = 2.5, fig.width = 4, fig.align = 'center'}
+ggplot(data, aes(x = value, y = market_value, fill = value)) +
+  geom_boxplot(notch = TRUE) +
+  theme_bw() + labs(x = "Type of operation", 
+                    y = "Market_value", 
+                    title = "Market value by type of operation") + 
+  theme(legend.position = "none")
+```
+
+# Linear regression
+
+## ANOVA models
+
+In order to try to explain our $Y$ variable *market_value* we try to use some ANOVA models.
+
+* One with *value* as explaining variable
+
+* One with the players' role
+
+```{r ANOVA models, warning=FALSE, echo=TRUE}
+lm_value <- lm(market_value ~ value, data = data) 
+pander(drop1(lm_value, test = 'F'))
+pander(summary(lm_value))
+pander(anova(lm_value, test = 'F'))
+```
+*value* results meaningful with F-value and t-value. This simple model explain 0.07 of the explicative variable.
+
+```{r}
+lm_role <- lm(market_value ~ positionText, data = data)
+pander(drop1(lm_role, test = 'F'))
+```
+
+On the other side position text is not able to explain our explicative variable, so we don't proceed with this model.
+
+```{r Lsmeans, results='asis', fig.height = 2.8, fig.width = 5, fig.align = 'center'}
+library(lsmeans)
+ls_value = lsmeans(lm_value,
+                   pairwise ~ value,
+                   adjust = 'tukey')
+kable(ls_value$contrasts, format = "latex", align = "c") %>%
+  kable_styling(position = "center")
+kable(ls_value$lsmeans, format = "latex", align = "c") %>%
+  kable_styling(position = "center")
+
+plot(ls_value$lsmeans, alpha = .05) + theme_bw() + labs(y = "Value",
+                                                        title = "Contrasts inside value variable")
+```
+
+Altogether speaking *value* is meaningful but only *Diritto di riscatto* is significantly different from the other values into *value* variable.
+
+```{r Coefplot, results='asis', fig.height = 2.8, fig.width = 5, fig.align = 'center'}
+coefplot(lm_value, intercept = TRUE) + theme_bw()
+```
+
+```{r Diagnosis plot, fig.align = "center"}
+par(mfrow = c(2,2))
+plot(lm_value)
+```
+
+From this plot we can see that there heteroskedasticity and non-normality of the residuals. We proceed using an ANCOVA model.
+
+## ANCOVA models
+
+```{r Removing other variables, include=FALSE}
+data$value <- as.factor(data$value)
+data$positionText <- as.factor(data$positionText)
+data$name=NULL
+data$isManOfTheMatch=NULL
+table(data$isOpta)
+data$isOpta=NULL
+data$regionCode=NULL
+data$pass=NULL
+data$type=NULL
+data$role=NULL
+data$from=NULL
+data$to=NULL
+data$proxy=NULL
+data$proxy2=NULL
+data$nation=NULL
+data$teamName=NULL
+data$isActive=NULL
+```
+
+In first place we try to apply a full model
+
+```{r lm_full, results='asis', fig.height = 2.8, fig.width = 5, fig.align = 'center'}
+lm_full = lm(market_value ~ ., data = data)
+pander(summary(lm_full), caption = "Summary of full_model")
+pander(anova(lm_full, test="F"))
+pander(drop1(lm_full, test="F"))
+coefplot(lm_full, intercept = TRUE) + theme_bw() 
+```
+```{r Diagnosis of lm_full, results='asis', fig.height = 2.8, fig.width = 5, fig.align = 'center'}
+pander(bptest(lm_full))
+plot(lm_full, which=1, pch = 19)
+abline(h = 0, col = "darkred", lty = 2, lwd = 1)
+pander(dwtest(lm_full))
+pander(ks.test(lm_full$residuals, "pnorm"))
+pander(shapiro.test(lm_full$residuals))
+hist(resid(lm_full), col = "lightblue", freq = FALSE, main = "Hist of lm_full residuals", xlab = "Residuals") 
+lines(density(lm_full$residuals), col = "darkred", lwd = 2)
+```
 
